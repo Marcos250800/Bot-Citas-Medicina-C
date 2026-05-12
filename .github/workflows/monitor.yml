@@ -40,10 +40,16 @@ jobs:
           name: capturas-${{ github.run_number }}
           path: |
             paso1_inicio.png
-            paso3_sucursal.png
-            paso5_servicio.png
-            paso6_fecha.png
+            paso2_opciones_sucursal.png
+            paso2_fallo.png
+            paso3_sucursal_elegida.png
+            paso4_opciones_servicio.png
+            paso6_estado_final.png
             hay_citas.png
             error.png
+            debug_paso2.html
+            debug_paso3.html
+            debug_paso4.html
+            debug_paso5.html
           if-no-files-found: ignore
           retention-days: 3
