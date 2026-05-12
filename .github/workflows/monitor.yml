@@ -1,0 +1,49 @@
+name: Monitor Citas Ciencia
+
+on:
+  schedule:
+    # Cada 5 minutos. Nota: GitHub puede aplicar pequeños retrasos
+    # cuando hay mucha carga, pero en general respeta este intervalo.
+    - cron: "*/5 * * * *"
+  workflow_dispatch:  # Permite ejecutar manualmente desde la pestaña Actions
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Ejecutar monitor
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python monitor_citas.py
+
+      - name: Subir capturas de pantalla (para debug)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: capturas-${{ github.run_number }}
+          path: |
+            paso1_inicio.png
+            paso3_sucursal.png
+            paso5_servicio.png
+            paso6_fecha.png
+            hay_citas.png
+            error.png
+          if-no-files-found: ignore
+          retention-days: 3
