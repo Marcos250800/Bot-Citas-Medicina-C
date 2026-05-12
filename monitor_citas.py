@@ -3,11 +3,13 @@ Monitor de citas - Ministerio de Ciencia, Innovación y Universidades.
 
 Flujo:
   1. Abre https://citaprevia.ciencia.gob.es/qmaticwebbooking/#/
-  2. Despliega "SELECCIONAR SUCURSAL" y elige "Oficina asistencia telefónica"
-  3. Despliega "SELECCIONAR SERVICIO" y elige "Asistencia reconocimiento títulos"
-  4. Lee el bloque "SELECCIONAR FECHA Y HORA":
-       - Si aparece el banner verde "no hay citas disponibles" -> silencio.
-       - Si NO aparece ese banner -> hay calendario -> avisa por Telegram.
+  2. El panel "SELECCIONAR SUCURSAL" ya está abierto por defecto.
+     Selecciona "Oficina asistencia telefónica" (radio button).
+  3. El panel "SELECCIONAR SERVICIO" se abre automáticamente.
+     Selecciona "Asistencia reconocimiento títulos".
+  4. El panel "SELECCIONAR FECHA Y HORA" muestra:
+       - Banner verde "no hay citas disponibles" -> silencio.
+       - Calendario / horas -> avisa por Telegram.
 """
 
 import asyncio
@@ -20,9 +22,6 @@ from playwright.async_api import async_playwright
 
 # ── Configuración ─────────────────────────────────────────────────────────────
 URL_CITA = "https://citaprevia.ciencia.gob.es/qmaticwebbooking/#/"
-
-SUCURSAL = "Oficina asistencia telefónica"
-SERVICIO = "Asistencia reconocimiento títulos"
 
 # Texto exacto que sale cuando NO hay citas (en el banner verde)
 TEXTO_NO_HAY_CITAS = "no hay citas disponibles"
@@ -43,13 +42,16 @@ def enviar_telegram(texto: str) -> None:
         return
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        data = {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": texto,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": False,
-        }
-        r = requests.post(url, data=data, timeout=15)
+        r = requests.post(
+            url,
+            data={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": texto,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": False,
+            },
+            timeout=15,
+        )
         if r.status_code == 200:
             log("✅ Telegram: mensaje enviado")
         else:
@@ -76,19 +78,62 @@ def enviar_telegram_foto(ruta: str, caption: str = "") -> None:
             )
         if r.status_code == 200:
             log("✅ Telegram: foto enviada")
-        else:
-            log(f"⚠ Telegram foto error {r.status_code}: {r.text}")
     except Exception as e:
         log(f"⚠ Error al enviar foto: {e}")
+
+
+# ── Selector helpers ──────────────────────────────────────────────────────────
+async def click_opcion_robusto(page, texto_busqueda: str, etiqueta: str) -> bool:
+    """
+    Intenta clicar una opción (radio button) que contenga texto_busqueda.
+    Prueba selectores típicos de Angular Material y devuelve True si clica.
+    """
+    selectores = [
+        f"mat-radio-button:has-text('{texto_busqueda}')",
+        f"[role='radio']:has-text('{texto_busqueda}')",
+        f"label:has-text('{texto_busqueda}')",
+        f".mat-radio-button:has-text('{texto_busqueda}')",
+        f".mat-radio-label:has-text('{texto_busqueda}')",
+        f"text={texto_busqueda}",
+        f"div:has(input[type='radio']):has-text('{texto_busqueda}')",
+        f"li:has-text('{texto_busqueda}')",
+    ]
+
+    for selector in selectores:
+        try:
+            el = page.locator(selector).first
+            count = await el.count()
+            if count > 0:
+                log(f"    → Encontrado con: {selector}")
+                await el.scroll_into_view_if_needed(timeout=3000)
+                await el.click(timeout=5000)
+                log(f"  ✓ {etiqueta} seleccionado")
+                return True
+        except Exception as e:
+            log(f"    ✗ Selector '{selector[:60]}' falló: {str(e)[:80]}")
+            continue
+
+    return False
+
+
+async def guardar_html_debug(page, nombre: str) -> None:
+    """Guarda el HTML actual para diagnóstico."""
+    try:
+        html = await page.content()
+        with open(nombre, "w", encoding="utf-8") as f:
+            f.write(html)
+        log(f"  📄 HTML guardado en {nombre} ({len(html)} bytes)")
+    except Exception as e:
+        log(f"  ⚠ No se pudo guardar HTML: {e}")
 
 
 # ── Comprobación ──────────────────────────────────────────────────────────────
 async def comprobar() -> str:
     """
-    Devuelve uno de estos valores:
-      "sin_citas"        -> el banner verde aparece, todo normal
-      "hay_citas"        -> banner ausente, posible calendario => avisar
-      "error"            -> algo falló (avisar como precaución)
+    Devuelve:
+      "sin_citas"  -> banner verde presente
+      "hay_citas"  -> banner ausente, posible calendario
+      "error"      -> algo falló
     """
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -104,107 +149,141 @@ async def comprobar() -> str:
         page = await context.new_page()
 
         try:
-            # ── Paso 1: abrir la página ──────────────────────────────────────
-            log("→ Paso 1: abriendo página de cita previa...")
+            # ── Paso 1: abrir la página ──
+            log("→ Paso 1: abriendo página...")
             await page.goto(URL_CITA, wait_until="networkidle", timeout=45000)
-            await page.wait_for_timeout(3000)
+            await page.wait_for_timeout(5000)
             await page.screenshot(path="paso1_inicio.png", full_page=True)
-            log(f"  URL: {page.url}")
+            log(f"  URL final: {page.url}")
 
-            # ── Paso 2: desplegar bloque "SELECCIONAR SUCURSAL" ──────────────
-            log("→ Paso 2: desplegando 'SELECCIONAR SUCURSAL'...")
+            # ── Paso 2: esperar opciones de sucursal (panel ya abierto) ──
+            log("→ Paso 2: esperando opciones de sucursal...")
             try:
-                # Click en la cabecera del acordeón
-                cabecera_sucursal = page.locator(
-                    "text=/SELECCIONAR\\s*SUCURSAL/i"
-                ).first
-                await cabecera_sucursal.click(timeout=15000)
-                await page.wait_for_timeout(2000)
+                await page.wait_for_selector(
+                    "text=/Oficina.{0,5}asistencia/i", timeout=20000
+                )
+                log("  ✓ Las opciones de sucursal son visibles")
             except Exception as e:
-                log(f"  ℹ No hizo falta clic explícito en sucursal: {e}")
+                log(f"  ⚠ No aparecieron las opciones: {e}")
+                await guardar_html_debug(page, "debug_paso2.html")
+                await page.screenshot(path="paso2_fallo.png", full_page=True)
+                raise
 
-            # ── Paso 3: elegir "Oficina asistencia telefónica" ───────────────
-            log(f"→ Paso 3: eligiendo sucursal '{SUCURSAL}'...")
-            clicado = False
-            for selector in [
-                f"label:has-text('{SUCURSAL}')",
-                f"text='{SUCURSAL}'",
-                "text=/Oficina\\s*asistencia\\s*telef/i",
-                "text=/Oficina\\s*virtual/i",
-            ]:
+            await page.screenshot(path="paso2_opciones_sucursal.png", full_page=True)
+
+            # ── Paso 3: clic en "Oficina asistencia telefónica" ──
+            log("→ Paso 3: clicando en 'Oficina asistencia telefónica'...")
+            ok = await click_opcion_robusto(
+                page, "Oficina asistencia telefónica", "Sucursal"
+            )
+            if not ok:
+                log("  → Intentando con JavaScript directo...")
                 try:
-                    el = page.locator(selector).first
-                    if await el.count() > 0:
-                        await el.click(timeout=8000)
-                        clicado = True
-                        log(f"  ✓ Sucursal seleccionada (selector: {selector})")
-                        break
-                except Exception:
-                    continue
+                    clicked = await page.evaluate("""
+                        () => {
+                            const els = document.querySelectorAll('*');
+                            for (const el of els) {
+                                if (el.children.length === 0 &&
+                                    el.textContent &&
+                                    el.textContent.includes('Oficina asistencia telef')) {
+                                    let target = el;
+                                    while (target &&
+                                           target.tagName !== 'MAT-RADIO-BUTTON' &&
+                                           target.tagName !== 'LABEL') {
+                                        target = target.parentElement;
+                                    }
+                                    if (target) { target.click(); return true; }
+                                    el.click();
+                                    return true;
+                                }
+                            }
+                            return false;
+                        }
+                    """)
+                    if clicked:
+                        log("  ✓ Clic con JS ejecutado")
+                        ok = True
+                except Exception as e:
+                    log(f"  ✗ JS también falló: {e}")
 
-            if not clicado:
+            if not ok:
+                await guardar_html_debug(page, "debug_paso3.html")
                 raise Exception("No se pudo seleccionar la sucursal")
 
-            await page.wait_for_timeout(3000)
-            await page.screenshot(path="paso3_sucursal.png", full_page=True)
+            await page.wait_for_timeout(4000)
+            await page.screenshot(path="paso3_sucursal_elegida.png", full_page=True)
 
-            # ── Paso 4: desplegar "SELECCIONAR SERVICIO" si hace falta ───────
-            log("→ Paso 4: desplegando 'SELECCIONAR SERVICIO' si está cerrado...")
+            # ── Paso 4: esperar opciones de servicio ──
+            log("→ Paso 4: esperando opciones de servicio...")
             try:
-                # Buscamos si el servicio ya está visible; si no, clicamos cabecera
-                servicio_visible = await page.locator(
-                    f"text=/{SERVICIO}/i"
-                ).count()
-                if servicio_visible == 0:
-                    cabecera_servicio = page.locator(
+                await page.wait_for_selector(
+                    "text=/Asistencia.{0,5}reconocimiento/i", timeout=15000
+                )
+                log("  ✓ Las opciones de servicio son visibles")
+            except Exception:
+                log("  → Servicio no visible, intentando abrir panel 2...")
+                try:
+                    cabecera = page.locator(
                         "text=/SELECCIONAR\\s*SERVICIO/i"
                     ).first
-                    await cabecera_servicio.click(timeout=10000)
-                    await page.wait_for_timeout(2000)
-            except Exception as e:
-                log(f"  ℹ Cabecera servicio: {e}")
+                    await cabecera.click(timeout=8000)
+                    await page.wait_for_timeout(3000)
+                    await page.wait_for_selector(
+                        "text=/Asistencia.{0,5}reconocimiento/i", timeout=10000
+                    )
+                    log("  ✓ Panel de servicio abierto manualmente")
+                except Exception as e:
+                    log(f"  ⚠ No se encontró el servicio: {e}")
+                    await guardar_html_debug(page, "debug_paso4.html")
+                    raise
 
-            # ── Paso 5: elegir "Asistencia reconocimiento títulos" ───────────
-            log(f"→ Paso 5: eligiendo servicio '{SERVICIO}'...")
-            clicado = False
-            for selector in [
-                f"label:has-text('{SERVICIO}')",
-                f"text='{SERVICIO}'",
-                "text=/Asistencia\\s*reconocimiento\\s*t.tulos/i",
-            ]:
+            await page.screenshot(path="paso4_opciones_servicio.png", full_page=True)
+
+            # ── Paso 5: clic en "Asistencia reconocimiento títulos" ──
+            log("→ Paso 5: clicando en 'Asistencia reconocimiento títulos'...")
+            ok = await click_opcion_robusto(
+                page, "Asistencia reconocimiento títulos", "Servicio"
+            )
+            if not ok:
+                log("  → Intentando con JavaScript directo...")
                 try:
-                    el = page.locator(selector).first
-                    if await el.count() > 0:
-                        await el.click(timeout=8000)
-                        clicado = True
-                        log(f"  ✓ Servicio seleccionado (selector: {selector})")
-                        break
-                except Exception:
-                    continue
+                    clicked = await page.evaluate("""
+                        () => {
+                            const els = document.querySelectorAll('*');
+                            for (const el of els) {
+                                if (el.children.length === 0 &&
+                                    el.textContent &&
+                                    el.textContent.includes('reconocimiento')) {
+                                    let target = el;
+                                    while (target &&
+                                           target.tagName !== 'MAT-RADIO-BUTTON' &&
+                                           target.tagName !== 'LABEL') {
+                                        target = target.parentElement;
+                                    }
+                                    if (target) { target.click(); return true; }
+                                    el.click();
+                                    return true;
+                                }
+                            }
+                            return false;
+                        }
+                    """)
+                    if clicked:
+                        ok = True
+                except Exception as e:
+                    log(f"  ✗ JS también falló: {e}")
 
-            if not clicado:
+            if not ok:
+                await guardar_html_debug(page, "debug_paso5.html")
                 raise Exception("No se pudo seleccionar el servicio")
 
-            # Esperar a que el bloque 3 cargue su contenido
-            await page.wait_for_timeout(5000)
-            await page.screenshot(path="paso5_servicio.png", full_page=True)
+            # ── Paso 6: esperar al bloque 3 ──
+            log("→ Paso 6: esperando bloque 'FECHA Y HORA'...")
+            await page.wait_for_timeout(6000)
+            await page.screenshot(path="paso6_estado_final.png", full_page=True)
 
-            # ── Paso 6: desplegar "SELECCIONAR FECHA Y HORA" si hace falta ───
-            log("→ Paso 6: comprobando bloque 'SELECCIONAR FECHA Y HORA'...")
-            try:
-                cabecera_fecha = page.locator(
-                    "text=/SELECCIONAR\\s*FECHA\\s*Y\\s*HORA/i"
-                ).first
-                # Intentar abrirlo (si ya está abierto, no pasa nada)
-                await cabecera_fecha.click(timeout=5000)
-                await page.wait_for_timeout(3000)
-            except Exception:
-                pass
-
-            await page.screenshot(path="paso6_fecha.png", full_page=True)
-
-            # ── Paso 7: leer el contenido y decidir ──────────────────────────
-            log("→ Paso 7: analizando si hay citas...")
+            # ── Paso 7: decidir si hay citas ──
+            log("→ Paso 7: analizando contenido...")
             contenido = (await page.content()).lower()
 
             if TEXTO_NO_HAY_CITAS in contenido:
@@ -212,8 +291,7 @@ async def comprobar() -> str:
                 await browser.close()
                 return "sin_citas"
             else:
-                log("  🚨 Banner verde NO detectado: POSIBLE calendario")
-                # Capturamos solo el bloque 3 para enviar a Telegram si podemos
+                log("  🚨 Banner 'no hay citas' AUSENTE -> posibles citas")
                 await page.screenshot(path="hay_citas.png", full_page=True)
                 await browser.close()
                 return "hay_citas"
@@ -237,27 +315,21 @@ async def main():
     if resultado == "hay_citas":
         mensaje = (
             "🔬🚨 <b>¡POSIBLE CITA EN CIENCIA!</b>\n\n"
-            f"Trámite: <b>{SERVICIO}</b>\n"
-            f"Oficina: <b>{SUCURSAL}</b>\n\n"
+            "Trámite: <b>Asistencia reconocimiento títulos</b>\n"
+            "Oficina: <b>Oficina asistencia telefónica</b>\n\n"
             "El banner de 'no hay citas' ha desaparecido.\n"
             "Entra YA en:\n"
             f"{URL_CITA}\n\n"
-            "⚡ <i>Las citas vuelan, reserva rápido.</i>"
+            "⚡ <i>Reserva rápido, las citas vuelan.</i>"
         )
         enviar_telegram(mensaje)
         if os.path.exists("hay_citas.png"):
             enviar_telegram_foto("hay_citas.png", "📸 Estado actual de la web")
-
     elif resultado == "error":
-        # Solo avisamos por error si fue algo grave. Para evitar spam,
-        # comentamos esta línea por defecto. Descoméntala si quieres avisos
-        # también cuando falle el script.
-        # enviar_telegram("⚠ Error en el bot de citas de Ciencia. Revisa los logs.")
         log("ℹ Error registrado (no se envía Telegram para evitar spam)")
         sys.exit(1)
-
-    else:  # sin_citas
-        log("✓ Todo normal. Sin citas disponibles. Hasta la próxima.")
+    else:
+        log("✓ Todo normal. Sin citas disponibles.")
 
 
 if __name__ == "__main__":
