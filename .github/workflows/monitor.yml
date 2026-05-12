@@ -2,10 +2,12 @@ name: Monitor Citas Ciencia
 
 on:
   schedule:
-    # Cada 5 minutos. Nota: GitHub puede aplicar pequeños retrasos
-    # cuando hay mucha carga, pero en general respeta este intervalo.
+    # Backup: por si cron-job.org falla, GitHub intenta cada 5 min
+    # (los crons de GitHub pueden retrasarse mucho cuando hay carga)
     - cron: "*/5 * * * *"
-  workflow_dispatch:  # Permite ejecutar manualmente desde la pestaña Actions
+  workflow_dispatch:  # Ejecución manual desde la pestaña Actions
+  repository_dispatch:  # Disparador externo desde cron-job.org
+    types: [check-citas]
 
 jobs:
   monitor:
