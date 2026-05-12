@@ -24,7 +24,7 @@ from playwright.async_api import async_playwright
 URL_CITA = "https://citaprevia.ciencia.gob.es/qmaticwebbooking/#/"
 
 # Texto exacto que sale cuando NO hay citas (en el banner verde)
-TEXTO_NO_HAY_CITAS = "zzzzzzzzzzz"
+TEXTO_NO_HAY_CITAS = "no hay citas disponibles"
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
